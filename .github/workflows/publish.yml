@@ -1,39 +1,51 @@
-
-name: Publish image
+name: Functional test
 
 on:
-  push:
+  pull_request:
     branches: [main]
-    tags: ["v*.*.*"]
-
-permissions:
-  contents: read
-  packages: write
 
 jobs:
-  publish:
+  functional-test:
     runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: testpassword
+          MARIADB_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_USER: root
+      DB_PASSWORD: testpassword
+      DB_NAME: test
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
+      - uses: actions/setup-python@v5
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          python-version: "3.13"
 
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=long
-            type=semver,pattern={{version}}
+      - run: pip install -r requirements.txt
 
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Start the app
+        run: |
+          python app.py &
+          for i in $(seq 1 15); do
+            curl -s http://localhost:5000/ > /dev/null && break
+            sleep 1
+          done
+
+      - name: Check database connection status
+        run: |
+          curl -s http://localhost:5000/ | tee response.txt
+          grep -F "Database Connection Status: Connected" response.txt
